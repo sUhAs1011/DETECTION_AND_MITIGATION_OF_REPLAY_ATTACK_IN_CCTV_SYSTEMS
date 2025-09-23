@@ -6,7 +6,7 @@ Secure Communication Protocols: Encrypting data and verifying stream authenticit
 - Modular Design: Seamlessly integrating with existing infrastructures. The system undergoes vulnerability assessments, machine learning model training, and rigorous testing to ensure effectiveness, scalability, and ease of use. Expected outcomes include improved replay attack detection, enhanced CCTV security, and greater trust in surveillance technologies, making this a significant step towards adaptive, secure surveillance solutions.
 
 ### High Level Design
-<img width="1000" height="803" alt="image" src="https://github.com/user-attachments/assets/7ee2f278-3c2b-413d-af84-f6787015291c" />
+![WhatsApp Image 2025-09-23 at 15 38 27_0dca5f1a](https://github.com/user-attachments/assets/97e1263d-23a1-4772-9fb9-8c9ae4a5030f)
 
 
 ### Project Workflow
