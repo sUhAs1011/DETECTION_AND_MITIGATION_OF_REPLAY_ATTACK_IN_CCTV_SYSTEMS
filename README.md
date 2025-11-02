@@ -5,8 +5,8 @@ Secure Communication Protocols: Encrypting data and verifying stream authenticit
 - Real-Time Automated Response: Alerting admins, isolating compromised devices, and blocking threats.
 - Modular Design: Seamlessly integrating with existing infrastructures. The system undergoes vulnerability assessments, machine learning model training, and rigorous testing to ensure effectiveness, scalability, and ease of use. Expected outcomes include improved replay attack detection, enhanced CCTV security, and greater trust in surveillance technologies, making this a significant step towards adaptive, secure surveillance solutions.
 
-### High Level Design
-![WhatsApp Image 2025-09-23 at 15 38 27_0dca5f1a](https://github.com/user-attachments/assets/97e1263d-23a1-4772-9fb9-8c9ae4a5030f)
+# Architecture Diagram
+<img width="630" height="780" alt="image" src="https://github.com/user-attachments/assets/3b4881e5-7d2d-4760-be00-23a89fd2446d" />
 
 ### Team Members
 - Mohit Prasad Singh (PES2UG22CS320)
