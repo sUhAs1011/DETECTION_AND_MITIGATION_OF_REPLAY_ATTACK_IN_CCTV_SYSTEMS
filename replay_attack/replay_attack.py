@@ -1,3 +1,9 @@
+# rtsp_replay_attack_auto.py
+# Detects the crime window in a source video, builds a crime-removed replay file,
+# starts the original RTSP stream + viewer, waits until the detected start time,
+# then starts streaming the replay file to a NEW RTSP URL.
+# Finally, it restarts the viewer so you immediately see the replayed footage.
+
 import cv2
 import numpy as np
 import subprocess
@@ -6,8 +12,9 @@ import time
 import sys
 
 # ===== USER CONFIG =====
-VIDEO_PATH = r"C:\Users\NITRO\OneDrive\Desktop\Capstone\Capstone_Code\Crime Footages\73.mp4"
-RTSP_URL = "rtsp://localhost:8554/camera"
+VIDEO_PATH = r"C:\Users\NITRO\OneDrive\Desktop\Capstone\Capstone_Code\Crime Footages\25.mp4"
+RTSP_URL_ORIGINAL = "rtsp://localhost:8554/camera"
+RTSP_URL_REPLAY   = "rtsp://localhost:8554/replay_camera"
 
 # Orchestration
 AUTO_START_ORIGINAL = True          # Let the script start the original RTSP stream
@@ -16,18 +23,17 @@ RESTART_FFPLAY_ON_SWITCH = True     # Restart ffplay after switch for reliable r
 
 # Detection parameters
 GRID_ROWS, GRID_COLS = 5, 5
-BASELINE_SEC = 0.5                  # seconds of initial "normal" frames to build baseline
-K_MAD = 1.0                         # sensitivity (lower = more sensitive)
-MIN_CLUSTER_FRAC = 0.05             # fraction of tiles required as a connected cluster
-PERSIST_START_SEC = 0.1             # seconds above threshold to confirm start
-PERSIST_END_SEC = 0.8               # seconds below threshold to confirm end
-SAFETY_MARGIN_SEC = 0.5             # extend cut on both sides (seconds)
+BASELINE_SEC = 0.5
+K_MAD = 1.0
+MIN_CLUSTER_FRAC = 0.05
+PERSIST_START_SEC = 0.1
+PERSIST_END_SEC = 0.8
+SAFETY_MARGIN_SEC = 0.5
 
 # Encoding parameters
 ENC_V = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-g", "30"]
 ENC_A = ["-c:a", "aac", "-ar", "48000", "-b:a", "128k"]
 # =======================
-
 
 def tile_motion(prev_gray, gray):
     diff = cv2.absdiff(prev_gray, gray)
@@ -41,7 +47,6 @@ def tile_motion(prev_gray, gray):
             tile = diff[y0:y1, x0:x1]
             out[r, c] = float(np.mean(tile)) if tile.size else 0.0
     return out
-
 
 def largest_cluster(mask_bool):
     H, W = mask_bool.shape
@@ -63,7 +68,6 @@ def largest_cluster(mask_bool):
                 best = max(best, size)
     return best
 
-
 def detect_crime_window(path):
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -84,7 +88,6 @@ def detect_crime_window(path):
         return None, None, fps
     prev_gray = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
 
-    # Build baseline from initial normal frames
     baselines = []
     for _ in range(baseline_frames):
         ret, frame = cap.read()
@@ -128,7 +131,6 @@ def detect_crime_window(path):
             above = 0
 
         if start_frame is None and above >= pstart_frames:
-            # backdate to include persistence frames
             start_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - pstart_frames
         if start_frame is not None and end_frame is None and below >= pend_frames:
             end_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - pend_frames
@@ -145,67 +147,36 @@ def detect_crime_window(path):
     end_time = min(total_duration, (end_frame / fps) + SAFETY_MARGIN_SEC)
     return start_time, end_time, fps
 
-
 def create_replay_file(path, t0, t1, fps, out_path="output_no_crime.mp4"):
     dur = max(0.04, t1 - t0)
     print(f"[INFO] Building replay file: replace {t0:.3f}s → {t1:.3f}s (dur {dur:.3f}s)")
 
-    # Head: 0 -> t0
-    subprocess.run([
-        "ffmpeg", "-y", "-i", path, "-ss", "0", "-to", f"{t0:.3f}",
-        *ENC_V, *ENC_A, "head.mp4"
-    ], check=True)
+    subprocess.run(["ffmpeg", "-y", "-i", path, "-ss", "0", "-to", f"{t0:.3f}", *ENC_V, *ENC_A, "head.mp4"], check=True)
+    subprocess.run(["ffmpeg", "-y", "-i", path, "-ss", "0", "-to", f"{t0:.3f}", *ENC_V, *ENC_A, "loop_src.mp4"], check=True)
+    subprocess.run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", "loop_src.mp4", "-t", f"{dur:.3f}", *ENC_V, *ENC_A, "filler.mp4"], check=True)
+    subprocess.run(["ffmpeg", "-y", "-i", path, "-ss", f"{t1:.3f}", *ENC_V, *ENC_A, "tail.mp4"], check=True)
 
-    # Loop source: 0 -> t0 (pre-crime)
-    subprocess.run([
-        "ffmpeg", "-y", "-i", path, "-ss", "0", "-to", f"{t0:.3f}",
-        *ENC_V, *ENC_A, "loop_src.mp4"
-    ], check=True)
-
-    # Filler: loop pre-crime to match duration
-    subprocess.run([
-        "ffmpeg", "-y", "-stream_loop", "-1", "-i", "loop_src.mp4",
-        "-t", f"{dur:.3f}", *ENC_V, *ENC_A, "filler.mp4"
-    ], check=True)
-
-    # Tail: t1 -> end
-    subprocess.run([
-        "ffmpeg", "-y", "-i", path, "-ss", f"{t1:.3f}",
-        *ENC_V, *ENC_A, "tail.mp4"
-    ], check=True)
-
-    # Concat parts (all consistently encoded)
     with open("concat.txt", "w") as f:
         f.write("file 'head.mp4'\n")
         f.write("file 'filler.mp4'\n")
         f.write("file 'tail.mp4'\n")
 
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "concat.txt",
-        *ENC_V, *ENC_A, "-r", f"{fps:.3f}", out_path
-    ], check=True)
+    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "concat.txt", *ENC_V, *ENC_A, "-r", f"{fps:.3f}", out_path], check=True)
 
-    # Cleanup temp parts
     for f in ["head.mp4", "loop_src.mp4", "filler.mp4", "tail.mp4", "concat.txt"]:
-        try:
-            os.remove(f)
-        except OSError:
-            pass
+        try: os.remove(f)
+        except OSError: pass
 
     print(f"[INFO] Replay file ready: {out_path}")
     return out_path
 
-
 def start_original_stream(video_path, rtsp_url):
-    # Use encoding for stable parameters
-    cmd = [
-        "ffmpeg", "-re", "-stream_loop", "-1", "-i", video_path,
-        "-c:v", "libx264", "-preset", "veryfast", "-g", "30",
-        "-c:a", "aac", "-ar", "48000", "-b:a", "128k",
-        "-f", "rtsp", rtsp_url
+    cmd = ["ffmpeg", "-re", "-stream_loop", "-1", "-i", video_path,
+           "-c:v", "libx264", "-preset", "veryfast", "-g", "30",
+           "-c:a", "aac", "-ar", "48000", "-b:a", "128k",
+           "-f", "rtsp", rtsp_url
     ]
     return subprocess.Popen(cmd)
-
 
 def start_replay_stream(replay_path, rtsp_url):
     cmd = [
@@ -216,11 +187,9 @@ def start_replay_stream(replay_path, rtsp_url):
     ]
     return subprocess.Popen(cmd)
 
-
 def start_ffplay(rtsp_url):
     # Low-latency flags to help reconnection
     return subprocess.Popen(["ffplay", "-fflags", "nobuffer", "-flags", "low_delay", rtsp_url])
-
 
 def terminate_process(proc, timeout=3):
     if not proc:
@@ -233,7 +202,6 @@ def terminate_process(proc, timeout=3):
             proc.kill()
     except Exception:
         pass
-
 
 if __name__ == "__main__":
     # 1) Detect crime window
@@ -255,55 +223,39 @@ if __name__ == "__main__":
     # 3) Start original RTSP stream and viewer
     orig_ffmpeg = None
     viewer = None
-    stream_start_time = time.time()
 
     if AUTO_START_ORIGINAL:
         print("[INFO] Starting original RTSP stream...")
-        orig_ffmpeg = start_original_stream(VIDEO_PATH, RTSP_URL)
-        stream_start_time = time.time()
-    else:
-        print("[INFO] Assuming original RTSP stream is already running...")
+        orig_ffmpeg = start_original_stream(VIDEO_PATH, RTSP_URL_ORIGINAL)
 
     if AUTO_LAUNCH_FFPLAY:
-        print("[INFO] Launching ffplay viewer...")
-        viewer = start_ffplay(RTSP_URL)
+        print("[INFO] Launching ffplay viewer for original stream...")
+        viewer = start_ffplay(RTSP_URL_ORIGINAL)
 
     # 4) Wait until crime start time relative to when streaming began
-    elapsed = time.time() - stream_start_time
-    wait_secs = max(0.0, t0 - elapsed)
-    if wait_secs > 0:
-        print(f"[INFO] Waiting {wait_secs:.2f}s before switching to replay...")
-        time.sleep(wait_secs)
+    print(f"[INFO] Waiting {t0:.2f}s before starting replay stream...")
+    time.sleep(t0)
 
-    # 5) Switch to replay: stop original, brief pause, start replay, restart viewer
-    print("[INFO] Switching to replay stream...")
-    if orig_ffmpeg is not None:
-        terminate_process(orig_ffmpeg)
-    else:
-        # If original not spawned by us (manual), try to kill any ffmpeg (Windows)
-        if os.name == "nt":
-            os.system("taskkill /IM ffmpeg.exe /F")
+    # 5) Start replay stream on a NEW RTSP URL
+    print("[INFO] Starting replay RTSP stream on new mount...")
+    replay_ffmpeg = start_replay_stream(replay_path, RTSP_URL_REPLAY)
 
-    # Give RTSP server time to free the mount
-    time.sleep(1.5)
-
-    print("[INFO] Starting replay RTSP stream...")
-    replay_ffmpeg = start_replay_stream(replay_path, RTSP_URL)
-
-    # Restart viewer to ensure it connects to the new publisher
+    # Restart viewer to ensure it connects to the replay publisher
     if viewer is not None and RESTART_FFPLAY_ON_SWITCH:
         terminate_process(viewer, timeout=2)
         time.sleep(1.0)  # let replay publisher come up
-        viewer = start_ffplay(RTSP_URL)
+        print("[INFO] Launching ffplay viewer for replay stream...")
+        viewer = start_ffplay(RTSP_URL_REPLAY)
 
-    print("[INFO] Replay stream running. Press Ctrl+C to stop.")
+    print("[INFO] Replay stream running separately. Press Ctrl+C to stop.")
 
     # 6) Keep running until user interrupts
     try:
         while True:
-            # Optionally, monitor child processes
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\n[INFO] Stopping replay stream and cleaning up...")
+        print("\n[INFO] Stopping streams and cleaning up...")
+        terminate_process(orig_ffmpeg)
         terminate_process(replay_ffmpeg)
+
         terminate_process(viewer)
